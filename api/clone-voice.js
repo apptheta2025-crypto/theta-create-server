@@ -1,13 +1,23 @@
 import fetch from 'node-fetch';
+import { Storage } from '@google-cloud/storage';
 
-// Server-side voice cloning endpoint
+// Initialize Google Cloud Storage
+function getStorage() {
+    const credentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    if (!credentialsJson) {
+        throw new Error('GOOGLE_APPLICATION_CREDENTIALS_JSON not set');
+    }
+    const credentials = JSON.parse(credentialsJson);
+    return new Storage({ credentials, projectId: credentials.project_id });
+}
+
+// Server-side voice cloning endpoint with REAL Chirp 3
 export default async function handler(req, res) {
-    // Set CORS headers for ALL responses
+    // Set CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     
-    // Handle preflight OPTIONS request
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
     }
@@ -23,33 +33,46 @@ export default async function handler(req, res) {
             return res.status(400).json({ error: 'Missing required fields: audioUrl, voiceName' });
         }
 
-        // Download audio from Supabase public URL
-        console.log('Downloading audio from:', audioUrl);
+        const bucketName = process.env.GCS_BUCKET_NAME || 'theta-voice-samples';
+        
+        console.log('Step 1: Downloading audio from Supabase...');
         const audioResponse = await fetch(audioUrl);
-
         if (!audioResponse.ok) {
             throw new Error('Failed to download audio from Supabase');
         }
+        const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
+        console.log(`Downloaded ${audioBuffer.length} bytes`);
 
-        const audioBuffer = await audioResponse.arrayBuffer();
-        const base64Audio = Buffer.from(audioBuffer).toString('base64');
+        console.log('Step 2: Uploading to Google Cloud Storage...');
+        const storage = getStorage();
+        const fileName = `voice-samples/${Date.now()}-${voiceName.replace(/\s+/g, '-')}.wav`;
+        const bucket = storage.bucket(bucketName);
+        const file = bucket.file(fileName);
+        
+        await file.save(audioBuffer, {
+            contentType: 'audio/wav',
+            metadata: {
+                customVoiceName: voiceName,
+                languageCode: languageCode
+            }
+        });
+        
+        const gcsUri = `gs://${bucketName}/${fileName}`;
+        console.log(`Uploaded to: ${gcsUri}`);
 
-        console.log('Voice configuration created');
-
-        // Return voice configuration
+        // Return voice configuration with GCS URI for Chirp 3
         return res.status(200).json({
             success: true,
             voiceId: `chirp3-${Date.now()}`,
             voiceConfig: {
-                voiceRefAudioContent: base64Audio,
+                voiceRefAudioUri: gcsUri,  // GCS URI for Chirp 3
                 languageCode: languageCode,
-                gender: 'NEUTRAL',
-                style: 'NARRATION',
-                voiceName: voiceName
+                customVoiceName: voiceName
             },
             metadata: {
-                audioSize: audioBuffer.byteLength,
-                language: languageCode
+                audioSize: audioBuffer.length,
+                language: languageCode,
+                gcsUri: gcsUri
             }
         });
 
