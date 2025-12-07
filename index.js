@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import cloneVoiceHandler from './api/clone-voice.js';
+import generateAudioHandler from './api/generate-audio.js';
 
 // Get current directory for ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -30,6 +31,11 @@ app.get('/health', (req, res) => {
 // Voice cloning endpoint
 app.post('/api/clone-voice', async (req, res) => {
     await cloneVoiceHandler(req, res);
+});
+
+// Audio generation endpoint
+app.post('/api/generate-audio', async (req, res) => {
+    await generateAudioHandler(req, res);
 });
 
 // Start server
