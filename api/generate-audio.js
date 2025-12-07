@@ -1,6 +1,16 @@
-import fetch from 'node-fetch';
+import textToSpeech from '@google-cloud/text-to-speech';
 
-// Server-side audio generation with Chirp 3 cloned voice support
+// Get Text-to-Speech client with service account credentials
+function getTTSClient() {
+    const credentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    if (!credentialsJson) {
+        throw new Error('GOOGLE_APPLICATION_CREDENTIALS_JSON not set');
+    }
+    const credentials = JSON.parse(credentialsJson);
+    return new textToSpeech.TextToSpeechClient({ credentials });
+}
+
+// Server-side audio generation using Vertex AI / Google Cloud TTS
 export default async function handler(req, res) {
     // Set CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -22,11 +32,6 @@ export default async function handler(req, res) {
             return res.status(400).json({ error: 'Missing required field: text' });
         }
 
-        const googleApiKey = process.env.GOOGLE_CHIRP3_API_KEY;
-        if (!googleApiKey) {
-            return res.status(500).json({ error: 'Google API key not configured' });
-        }
-
         // Clean and prepare text
         let cleanText = text
             .replace(/&nbsp;/g, ' ')
@@ -36,30 +41,49 @@ export default async function handler(req, res) {
             .replace(/<[^>]*>/g, '')
             .substring(0, 4000);
 
+        // Get TTS client with OAuth2 authentication
+        const client = getTTSClient();
+
+        // Determine voice settings
         const languageCode = voiceConfig?.languageCode || 'en-US';
-        
-        // Check if this is a Chirp 3 cloned voice (has GCS URI)
-        const gcsUri = voiceConfig?.voiceRefAudioUri;
-        
-        let audioContent;
-        
-        if (gcsUri && gcsUri.startsWith('gs://')) {
-            // Use Chirp 3 with cloned voice
-            console.log('Using Chirp 3 cloned voice:', gcsUri);
-            audioContent = await generateWithChirp3(cleanText, gcsUri, languageCode, googleApiKey, settings);
-        } else {
-            // Use standard TTS
-            const voiceName = voiceConfig?.name || getVoiceNameForLanguage(languageCode);
-            console.log('Using standard TTS voice:', voiceName);
-            audioContent = await generateWithStandardTTS(cleanText, voiceName, languageCode, googleApiKey, settings);
+        const voiceName = voiceConfig?.name || getVoiceNameForLanguage(languageCode);
+
+        console.log(`Using Vertex AI TTS with voice: ${voiceName}`);
+
+        // Add natural pauses using SSML
+        const ssmlText = `<speak>${cleanText.replace(/\. /g, '.<break time="400ms"/> ')}</speak>`;
+
+        // Build the TTS request
+        const request = {
+            input: { ssml: ssmlText },
+            voice: {
+                languageCode: languageCode,
+                name: voiceName
+            },
+            audioConfig: {
+                audioEncoding: 'MP3',
+                speakingRate: settings.speed || 1.0,
+                pitch: settings.pitch || 0
+            }
+        };
+
+        // Call Google Cloud TTS API
+        const [response] = await client.synthesizeSpeech(request);
+
+        if (!response.audioContent) {
+            throw new Error('No audio content received from TTS API');
         }
 
-        console.log('Audio generated successfully');
+        // Convert to base64
+        const audioContent = Buffer.from(response.audioContent).toString('base64');
+
+        console.log('Audio generated successfully via Vertex AI TTS');
+
         return res.status(200).json({
             success: true,
             audioContent: audioContent,
             format: 'mp3',
-            metadata: { language: languageCode, mode: gcsUri ? 'chirp3' : 'standard' }
+            metadata: { language: languageCode, voice: voiceName, mode: 'vertex-ai' }
         });
 
     } catch (error) {
@@ -68,72 +92,18 @@ export default async function handler(req, res) {
     }
 }
 
-// Generate audio using Chirp 3 with cloned voice (voiceRefAudioUri)
-async function generateWithChirp3(text, gcsUri, languageCode, apiKey, settings) {
-    const endpoint = `https://texttospeech.googleapis.com/v1beta1/text:synthesize?key=${apiKey}`;
-    
-    const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            input: { text: text },
-            voice: {
-                languageCode: languageCode,
-                voiceCloneConfig: {
-                    voiceRefAudioUri: gcsUri
-                }
-            },
-            audioConfig: {
-                audioEncoding: 'MP3',
-                speakingRate: settings.speed || 1.0
-            }
-        })
-    });
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Chirp 3 API error:', errorText);
-        throw new Error(`Chirp 3 failed: ${errorText}`);
-    }
-
-    const data = await response.json();
-    return data.audioContent;
-}
-
-// Generate audio using standard Google TTS
-async function generateWithStandardTTS(text, voiceName, languageCode, apiKey, settings) {
-    const endpoint = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`;
-    
-    const ssml = `<speak>${text.replace(/\. /g, '.<break time="400ms"/> ')}</speak>`;
-    
-    const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            input: { ssml: ssml },
-            voice: { languageCode: languageCode, name: voiceName },
-            audioConfig: {
-                audioEncoding: 'MP3',
-                speakingRate: settings.speed || 1.0
-            }
-        })
-    });
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`TTS failed: ${errorText}`);
-    }
-
-    const data = await response.json();
-    return data.audioContent;
-}
-
+// Voice mapping - using high-quality Journey/Studio/Wavenet voices
 function getVoiceNameForLanguage(languageCode) {
     const voiceMap = {
         'hi-IN': 'hi-IN-Wavenet-A',
         'en-US': 'en-US-Journey-F',
         'en-GB': 'en-GB-Studio-B',
-        'en-IN': 'en-IN-Journey-F'
+        'en-IN': 'en-IN-Journey-F',
+        'es-ES': 'es-ES-Studio-F',
+        'fr-FR': 'fr-FR-Studio-A',
+        'de-DE': 'de-DE-Studio-B',
+        'ja-JP': 'ja-JP-Neural2-B',
+        'ko-KR': 'ko-KR-Neural2-A'
     };
     return voiceMap[languageCode] || 'en-US-Journey-F';
 }
