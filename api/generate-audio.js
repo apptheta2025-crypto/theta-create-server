@@ -1,24 +1,16 @@
 import fetch from 'node-fetch';
 
-// CORS headers for Vercel serverless
-const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
-};
-
 // Server-side audio generation endpoint using Google Cloud TTS
 export default async function handler(req, res) {
-    // Handle CORS preflight
+    // Set CORS headers for ALL responses (including preflight)
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    
+    // Handle preflight OPTIONS request
     if (req.method === 'OPTIONS') {
-        res.status(200).set(corsHeaders).end();
-        return;
+        return res.status(200).end();
     }
-
-    // Set CORS headers for all responses
-    Object.entries(corsHeaders).forEach(([key, value]) => {
-        res.setHeader(key, value);
-    });
 
     if (req.method !== 'POST') {
         return res.status(405).json({ error: 'Method not allowed' });
@@ -35,10 +27,10 @@ export default async function handler(req, res) {
 
         if (!googleApiKey) {
             console.error('Google API Key not found');
-            return res.status(500).json({ error: 'Google API key not configured' });
+            return res.status(500).json({ error: 'Google API key not configured on server' });
         }
 
-        console.log('Generating audio with SSML...');
+        console.log('Generating audio...');
         
         // Basic cleanup of input text
         let cleanText = text
@@ -52,7 +44,6 @@ export default async function handler(req, res) {
         // Truncate before adding SSML tags
         const SAFE_CHAR_LIMIT = 4000;
         if (cleanText.length > SAFE_CHAR_LIMIT) {
-             console.log(`Text too long, truncating to ${SAFE_CHAR_LIMIT}...`);
              cleanText = cleanText.substring(0, SAFE_CHAR_LIMIT) + '...';
         }
 
@@ -64,19 +55,11 @@ export default async function handler(req, res) {
 
         const finalSsml = `<speak>${ssmlText}</speak>`;
 
-        console.log(`SSML length: ${finalSsml.length} chars`);
-
         // Use Google Cloud Text-to-Speech API
         const ttsEndpoint = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${googleApiKey}`;
 
         const languageCode = voiceConfig?.languageCode || 'en-US';
-        let voiceName = voiceConfig?.name || voiceConfig?.voiceName;
-        
-        if (!voiceName) {
-            voiceName = getVoiceNameForLanguage(languageCode);
-        }
-        
-        console.log(`Using voice: ${voiceName}`);
+        let voiceName = voiceConfig?.name || voiceConfig?.voiceName || getVoiceNameForLanguage(languageCode);
 
         const ttsResponse = await fetch(ttsEndpoint, {
             method: 'POST',
@@ -101,21 +84,21 @@ export default async function handler(req, res) {
         const ttsData = await ttsResponse.json();
 
         if (!ttsData.audioContent) {
-            throw new Error('No audio content received from TTS API');
+            throw new Error('No audio content received');
         }
 
         console.log('Audio generated successfully');
 
-        res.status(200).json({
+        return res.status(200).json({
             success: true,
             audioContent: ttsData.audioContent,
             format: 'mp3',
-            metadata: { language: languageCode, voice: voiceName, mode: 'ssml' }
+            metadata: { language: languageCode, voice: voiceName }
         });
 
     } catch (error) {
         console.error('Audio generation error:', error);
-        res.status(500).json({ error: 'Audio generation failed', details: error.message });
+        return res.status(500).json({ error: 'Audio generation failed', details: error.message });
     }
 }
 
@@ -124,12 +107,7 @@ function getVoiceNameForLanguage(languageCode) {
         'hi-IN': 'hi-IN-Wavenet-A',
         'en-US': 'en-US-Journey-F',
         'en-GB': 'en-GB-Studio-B',
-        'en-IN': 'en-IN-Journey-F',
-        'es-ES': 'es-ES-Studio-F',
-        'fr-FR': 'fr-FR-Studio-A',
-        'de-DE': 'de-DE-Studio-B',
-        'ja-JP': 'ja-JP-Neural2-B',
-        'ko-KR': 'ko-KR-Neural2-A'
+        'en-IN': 'en-IN-Journey-F'
     };
     return voiceMap[languageCode] || 'en-US-Journey-F';
 }
