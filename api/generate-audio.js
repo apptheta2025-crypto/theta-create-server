@@ -20,53 +20,65 @@ export default async function handler(req, res) {
             return res.status(500).json({ error: 'Google API key not configured' });
         }
 
-        console.log('Generating audio...');
-        console.log(`Text length: ${text.length} characters`);
-        console.log(`Voice: ${voiceId}`);
-        console.log(`Language: ${voiceConfig?.languageCode || 'en-US'}`);
+        console.log('Generating audio with SSML...');
 
-        // Strip HTML tags from text
-        const plainText = text
-            .replace(/<[^>]*>/g, '') // Remove HTML tags
-            .replace(/&nbsp;/g, ' ') // Replace non-breaking spaces
+        // 1. First, basic cleanup of input text (remove weird chars but keep structure)
+        let cleanText = text
+            .replace(/&nbsp;/g, ' ')
             .replace(/&amp;/g, '&')
             .replace(/&lt;/g, '<')
             .replace(/&gt;/g, '>')
             .replace(/&quot;/g, '"')
-            .replace(/&#39;/g, "'")
-            .replace(/\s+/g, ' ') // Normalize whitespace
-            .trim();
+            .replace(/&#39;/g, "'");
 
-        console.log(`Plain text length: ${plainText.length} characters`);
+        // 2. Truncate BEFORE adding SSML tags to be safe (Google has 5000 byte limit)
+        // We leave room for SSML tags (which add bytes)
+        const SAFE_CHAR_LIMIT = 4000;
+        if (cleanText.length > SAFE_CHAR_LIMIT) {
+            console.log(`Text too long (${cleanText.length} chars), truncating to ${SAFE_CHAR_LIMIT}...`);
+            cleanText = cleanText.substring(0, SAFE_CHAR_LIMIT) + '...';
+        }
 
-        // Determine voice name based on language
-        const languageCode = voiceConfig?.languageCode || 'en-US';
+        // 3. Convert HTML structure to SSML
+        // - Paragraphs get a nice long pause (600ms)
+        // - Line breaks get a medium pause (300ms)
+        let ssmlText = cleanText
+            .replace(/<\/p>/gi, '<break time="600ms"/>') // Pause at end of paragraphs
+            .replace(/<br\s*\/?>/gi, '<break time="300ms"/>') // Pause at line breaks
+            .replace(/<[^>]*>/g, ''); // Strip all other remaining HTML tags (like <div>, <span>, opening <p>)
+
+        // 4. Wrap in <speak> tag
+        const finalSsml = `<speak>${ssmlText}</speak>`;
+
+        console.log(`SSML length: ${finalSsml.length} chars`);
+        console.log(`Voice ID: ${voiceId}`);
+        console.log(`Language: ${voiceConfig?.languageCode || 'en-US'}`);
 
         // Google TTS has a 5000 BYTE limit per request
-        // Use Buffer.byteLength for Node.js (TextEncoder is browser-only)
-        const MAX_BYTES = 4500;
-        let processedText = plainText;
+        const ssmlBytes = Buffer.byteLength(finalSsml, 'utf8');
+        console.log(`SSML byte length: ${ssmlBytes} bytes`);
 
-        const textBytes = Buffer.byteLength(plainText, 'utf8');
-        console.log(`Text byte length: ${textBytes} bytes`);
-
-        if (textBytes > MAX_BYTES) {
-            console.log(`Text too long (${textBytes} bytes), truncating to under ${MAX_BYTES} bytes`);
-
-            // Truncate by reducing characters until under byte limit
-            let truncated = plainText;
-            while (Buffer.byteLength(truncated, 'utf8') > MAX_BYTES) {
-                truncated = truncated.slice(0, -100);
-            }
-            processedText = truncated + '...';
-            console.log(`Truncated to ${Buffer.byteLength(processedText, 'utf8')} bytes`);
+        if (ssmlBytes > 5000) {
+            console.warn('Warning: SSML byte length exceeds 5000 bytes even after initial truncation.');
         }
 
         // Use Google Cloud Text-to-Speech API
         const ttsEndpoint = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${googleApiKey}`;
 
-        // Determine voice name based on language
-        const voiceName = getVoiceNameForLanguage(languageCode);
+        // Determine voice name
+        const languageCode = voiceConfig?.languageCode || 'en-US';
+
+        // BUG FIX: Prioritize specific voice name from config
+        // Check voiceConfig.name (system voices) or voiceConfig.voiceName (cloned voices)
+        // Fallback to getVoiceNameForLanguage only if no specific name is provided
+        let voiceName = voiceConfig?.name || voiceConfig?.voiceName;
+
+        if (!voiceName) {
+            console.log('No specific voice name provided, using language default');
+            voiceName = getVoiceNameForLanguage(languageCode);
+        } else {
+            console.log(`Using specific voice: ${voiceName}`);
+        }
 
         const ttsResponse = await fetch(ttsEndpoint, {
             method: 'POST',
@@ -74,7 +86,7 @@ export default async function handler(req, res) {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                input: { text: processedText },
+                input: { ssml: finalSsml },
                 voice: {
                     languageCode: languageCode,
                     name: voiceName
@@ -104,12 +116,13 @@ export default async function handler(req, res) {
         // Return base64 audio
         res.status(200).json({
             success: true,
-            audioContent: ttsData.audioContent, // Base64 encoded audio
+            audioContent: ttsData.audioContent,
             format: 'mp3',
             metadata: {
                 textLength: text.length,
                 language: languageCode,
-                voice: voiceName
+                voice: voiceName,
+                mode: 'ssml'
             }
         });
 
@@ -126,9 +139,9 @@ export default async function handler(req, res) {
 // Using Journey and Studio voices for more natural, human-like speech
 function getVoiceNameForLanguage(languageCode) {
     const voiceMap = {
-        'hi-IN': 'hi-IN-Wavenet-A',     // Hindi - Wavenet is most human-like available
-        'en-US': 'en-US-Journey-F',      // English US - Journey is very human-like
-        'en-GB': 'en-GB-Studio-B',       // British English - Studio
+        'hi-IN': 'hi-IN-Wavenet-A',     // Hindi
+        'en-US': 'en-US-Journey-F',      // English US
+        'en-GB': 'en-GB-Studio-B',       // British English
         'en-IN': 'en-IN-Journey-F',      // Indian English
         'es-ES': 'es-ES-Studio-F',       // Spanish
         'fr-FR': 'fr-FR-Studio-A',       // French
