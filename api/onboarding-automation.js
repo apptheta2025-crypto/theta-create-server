@@ -30,15 +30,24 @@ export default async function handler(req, res) {
     if (req.query?.migrate === 'true') {
         console.log("[DEBUG] Legacy Migration Triggered...");
         try {
-            const { data: contacts } = await resend.contacts.list({ audienceId: GENERAL_AUDIENCE_ID });
+            const { data: contacts, error: fetchErr } = await resend.contacts.list({ audienceId: GENERAL_AUDIENCE_ID });
+            if (fetchErr) throw fetchErr;
+
             if (contacts && contacts.data) {
-                console.log(`[DEBUG] Migrating ${contacts.data.length} users...`);
-                for (const c of contacts.data) {
-                    await supabase.from('allowed_users').upsert({ email: c.email.toLowerCase().trim() });
-                }
-                return res.status(200).json({ message: `Successfully migrated ${contacts.data.length} users to Supabase.` });
+                const whitelistEntries = contacts.data.map(c => ({ email: c.email.toLowerCase().trim() }));
+                console.log(`[DEBUG] Batch-migrating ${whitelistEntries.length} users to Supabase...`);
+                
+                // BATCH UPSERT: Much faster for Hobby Tier 10s timeout
+                const { error: dbError } = await supabase.from('allowed_users').upsert(whitelistEntries, { onConflict: 'email' });
+                if (dbError) throw dbError;
+
+                return res.status(200).json({ 
+                    success: true, 
+                    message: `Successfully migrated ${whitelistEntries.length} users to the Supabase Whitelist.` 
+                });
             }
         } catch (err) {
+            console.error("[DEBUG] Migration Failed:", err.message);
             return res.status(500).json({ error: `Migration Failed: ${err.message}` });
         }
     }
