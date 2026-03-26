@@ -12,119 +12,226 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY;
 
 // Resend Audience Segments
 const GENERAL_AUDIENCE_ID = '76bd49ad-9462-4971-9ffa-6eefb60e90b0';
-const UNVERIFIED_USERS_ID = '5726ca5a-914c-4bd4-8be4-a3ea611d7e3d';
+const UNVERIFIED_AUDIENCE_ID = '5726ca5a-914c-4bd4-8be4-a3ea611d7e3d';
 
 export default async function handler(req, res) {
-    console.log("[DEBUG] SERVER HIT: /api/onboarding-automation triggered");
+    console.log("[ONBOARDING] Endpoint hit:", req.method, JSON.stringify(req.query));
+
+    // ── BOOT CHECK: Validate essential env vars ──
+    if (!SUPABASE_SERVICE_ROLE_KEY) {
+        console.error("[ONBOARDING] FATAL: SUPABASE_SERVICE_ROLE_KEY is not set!");
+        return res.status(500).json({ error: 'Server misconfiguration: Missing SUPABASE_SERVICE_ROLE_KEY' });
+    }
+    if (!RESEND_API_KEY) {
+        console.error("[ONBOARDING] FATAL: RESEND_API_KEY is not set!");
+        return res.status(500).json({ error: 'Server misconfiguration: Missing RESEND_API_KEY' });
+    }
 
     // Initialize clients INSIDE the handler to prevent boot-crashes
     const resend = new Resend(RESEND_API_KEY);
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // AUTO-WHITELIST ADMIN (Recovery)
+    // AUTO-WHITELIST ADMIN (Recovery safety net)
     try {
         await supabase.from('allowed_users').upsert({ email: 'lubhitmamodia23@gmail.com' });
-    } catch (e) { console.error("Admin auto-whitelist failed:", e.message); }
+    } catch (e) { console.error("[ONBOARDING] Admin auto-whitelist failed:", e.message); }
 
-    // [MIGRATION MODE] - Sync existing General list to Supabase
+    // ══════════════════════════════════════════
+    // MODE 1: MIGRATION — Sync existing Resend General list → Supabase allowed_users
+    // Usage: GET /api/onboarding-automation?migrate=true
+    // ══════════════════════════════════════════
     if (req.query?.migrate === 'true') {
-        console.log("[DEBUG] Legacy Migration Triggered...");
+        console.log("[ONBOARDING] Migration mode triggered...");
         try {
             const { data: contacts, error: fetchErr } = await resend.contacts.list({ audienceId: GENERAL_AUDIENCE_ID });
-            if (fetchErr) throw fetchErr;
+            if (fetchErr) throw new Error(`Resend list error: ${JSON.stringify(fetchErr)}`);
 
-            if (contacts && contacts.data) {
+            if (contacts && contacts.data && contacts.data.length > 0) {
                 const whitelistEntries = contacts.data.map(c => ({ email: c.email.toLowerCase().trim() }));
-                console.log(`[DEBUG] Batch-migrating ${whitelistEntries.length} users to Supabase...`);
+                console.log(`[ONBOARDING] Migrating ${whitelistEntries.length} users to Supabase...`);
                 
-                // BATCH UPSERT: Much faster for Hobby Tier 10s timeout
-                const { error: dbError } = await supabase.from('allowed_users').upsert(whitelistEntries, { onConflict: 'email' });
-                if (dbError) throw dbError;
+                const { error: dbError } = await supabase
+                    .from('allowed_users')
+                    .upsert(whitelistEntries, { onConflict: 'email' });
+                if (dbError) throw new Error(`Supabase upsert error: ${JSON.stringify(dbError)}`);
 
                 return res.status(200).json({ 
                     success: true, 
-                    message: `Successfully migrated ${whitelistEntries.length} users to the Supabase Whitelist.` 
+                    message: `Migrated ${whitelistEntries.length} users to Supabase whitelist.`,
+                    emails: whitelistEntries.map(e => e.email)
                 });
+            } else {
+                return res.status(200).json({ success: true, message: 'No contacts found in General audience to migrate.' });
             }
         } catch (err) {
-            console.error("[DEBUG] Migration Failed:", err.message);
-            return res.status(500).json({ error: `Migration Failed: ${err.message}` });
+            console.error("[ONBOARDING] Migration failed:", err.message);
+            return res.status(500).json({ error: `Migration failed: ${err.message}` });
         }
     }
 
-    // 1. Handle Instant Webhook from Google Sheets
+    // ══════════════════════════════════════════
+    // MODE 2: INSTANT WEBHOOK — Google Sheets trigger
+    // Usage: POST with { webhookSecret: 'theta_instant_grant', email: '...' }
+    // ══════════════════════════════════════════
     if (req.method === 'POST' && req.body?.webhookSecret === 'theta_instant_grant') {
         const { email } = req.body;
-        console.log(`[DEBUG] Step 1: Webhook received for: ${email}`);
+        console.log(`[ONBOARDING] Webhook received for: ${email}`);
         if (email && email.includes('@')) {
             try {
                 await grantAccess(email.toLowerCase().trim(), supabase, resend);
-                return res.status(200).json({ success: true });
+                return res.status(200).json({ success: true, message: `Access granted to ${email}` });
             } catch (err) {
-                console.error(`[DEBUG] Webhook Error:`, err.message);
+                console.error(`[ONBOARDING] Webhook grant error:`, err.message);
                 return res.status(500).json({ error: err.message });
             }
         }
+        return res.status(400).json({ error: 'Invalid email in webhook payload' });
     }
 
-    // 2. Cron Logic (Maintenance)
+    // ══════════════════════════════════════════
+    // MODE 3: CRON — Automated maintenance cycle
+    // Checks Google Sheets for new form responses and grants access
+    // ══════════════════════════════════════════
+
+    // Auth check: Only enforce if CRON_SECRET is configured
     if (process.env.CRON_SECRET && req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
+        console.warn("[ONBOARDING] Cron auth failed. Expected Bearer token.");
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
     try {
-        console.log("[DEBUG] Starting maintenance cycle...");
+        console.log("[ONBOARDING] Starting maintenance cycle...");
+
+        // Step 1: Fetch all unverified users from Supabase
         const { data: unverifiedUsers, error: dbError } = await supabase
             .from('unverified_users')
             .select('*')
             .eq('verified', false);
 
-        if (dbError) throw dbError;
-        
-        // Google Auth
-        const auth = new google.auth.GoogleAuth({
-            credentials: JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON),
-            scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-        });
-        const sheets = google.sheets({ version: 'v4', auth });
-        const response = await sheets.spreadsheets.values.get({
-            spreadsheetId: GOOGLE_SHEET_ID,
-            range: 'Form Responses 1!A:E',
-        });
+        if (dbError) {
+            throw new Error(`Supabase query failed: ${JSON.stringify(dbError)}`);
+        }
 
-        const rows = response.data.values || [];
-        const verifiedEmails = new Set(rows.map(row => row.find(c => c?.includes('@'))?.toLowerCase().trim()));
+        if (!unverifiedUsers || unverifiedUsers.length === 0) {
+            console.log("[ONBOARDING] No unverified users to process.");
+            return res.status(200).json({ success: true, message: 'No unverified users pending.' });
+        }
+
+        console.log(`[ONBOARDING] Found ${unverifiedUsers.length} unverified users to check.`);
+
+        // Step 2: Authenticate with Google Sheets
+        let verifiedEmails = new Set();
+        try {
+            if (!process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+                throw new Error('GOOGLE_APPLICATION_CREDENTIALS_JSON env var is not set');
+            }
+
+            const credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+            const auth = new google.auth.GoogleAuth({
+                credentials: credentials,
+                scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+            });
+            const sheets = google.sheets({ version: 'v4', auth });
+            
+            const response = await sheets.spreadsheets.values.get({
+                spreadsheetId: GOOGLE_SHEET_ID,
+                range: 'Form Responses 1!A:E',
+            });
+
+            const rows = response.data.values || [];
+            console.log(`[ONBOARDING] Google Sheets returned ${rows.length} rows.`);
+
+            // Extract all emails found in ANY column of each row
+            for (const row of rows) {
+                for (const cell of row) {
+                    if (cell && typeof cell === 'string' && cell.includes('@')) {
+                        verifiedEmails.add(cell.toLowerCase().trim());
+                    }
+                }
+            }
+            console.log(`[ONBOARDING] Found ${verifiedEmails.size} unique emails in form responses.`);
+        } catch (sheetsErr) {
+            console.error("[ONBOARDING] Google Sheets error:", sheetsErr.message);
+            return res.status(500).json({ error: `Google Sheets error: ${sheetsErr.message}` });
+        }
+
+        // Step 3: Process each unverified user
+        let granted = 0;
+        let expired = 0;
+        const errors = [];
 
         for (const user of unverifiedUsers) {
             const email = user.email.toLowerCase().trim();
+            const signupDate = new Date(user.created_at);
+            const hoursSinceSignup = (Date.now() - signupDate.getTime()) / (1000 * 60 * 60);
+
             if (verifiedEmails.has(email)) {
-                await grantAccess(email, supabase, resend);
+                // User filled the Google Form — grant access
+                try {
+                    console.log(`[ONBOARDING] Granting access to: ${email}`);
+                    await grantAccess(email, supabase, resend);
+                    granted++;
+                } catch (err) {
+                    console.error(`[ONBOARDING] Failed to grant ${email}:`, err.message);
+                    errors.push({ email, error: err.message });
+                }
+            } else if (hoursSinceSignup > 48) {
+                // 48-hour expiration
+                try {
+                    console.log(`[ONBOARDING] Expiring: ${email} (${Math.round(hoursSinceSignup)}h old)`);
+                    await handleExpiration(email, supabase, resend);
+                    expired++;
+                } catch (err) {
+                    console.error(`[ONBOARDING] Failed to expire ${email}:`, err.message);
+                    errors.push({ email, error: err.message });
+                }
             }
         }
 
-        return res.status(200).json({ success: true });
+        return res.status(200).json({ 
+            success: true,
+            processed: unverifiedUsers.length,
+            granted,
+            expired,
+            errors: errors.length > 0 ? errors : undefined
+        });
     } catch (err) {
-        console.error("[DEBUG] Cron Error:", err.message);
+        console.error("[ONBOARDING] Cron critical error:", err.message);
         return res.status(500).json({ error: err.message });
     }
 }
 
+// ══════════════════════════════════════════
+// HELPER: Grant access to a verified user
+// ══════════════════════════════════════════
 async function grantAccess(email, supabase, resend) {
-    console.log(`[DEBUG] Granting access to ${email}...`);
+    console.log(`[ONBOARDING] Granting access to ${email}...`);
     
-    // Whitelist in Supabase
-    await supabase.from('allowed_users').upsert({ email });
-    await supabase.from('unverified_users').update({ verified: true }).eq('email', email);
-
-    // Resend Move
-    try {
-        await resend.contacts.create({ email, audienceId: GENERAL_AUDIENCE_ID });
-        await resend.contacts.remove({ email, audienceId: UNVERIFIED_USERS_ID });
-    } catch (err) {
-        console.warn(`[DEBUG] Resend Sync Warning:`, err.message);
+    // 1. Add to Supabase whitelist
+    const { error: whitelistErr } = await supabase.from('allowed_users').upsert({ email });
+    if (whitelistErr) {
+        throw new Error(`Whitelist upsert failed for ${email}: ${JSON.stringify(whitelistErr)}`);
     }
 
-     // Final Email
+    // 2. Mark as verified in unverified_users
+    await supabase.from('unverified_users').update({ verified: true }).eq('email', email);
+
+    // 3. Move contact in Resend: Add to General, Remove from Unverified
+    try {
+        // Add to General audience
+        await resend.contacts.create({ email, audienceId: GENERAL_AUDIENCE_ID });
+    } catch (err) {
+        console.warn(`[ONBOARDING] Resend add-to-General warning for ${email}:`, err.message);
+    }
+
+    try {
+        // Remove from Unverified audience — must find contact ID first
+        await removeContactByEmail(resend, email, UNVERIFIED_AUDIENCE_ID);
+    } catch (err) {
+        console.warn(`[ONBOARDING] Resend remove-from-Unverified warning for ${email}:`, err.message);
+    }
+
+    // 4. Send "Access Granted" email
     await resend.emails.send({
         from: 'Theta <no-reply@theta.co.in>',
         to: email,
@@ -164,4 +271,63 @@ async function grantAccess(email, supabase, resend) {
         </html>
         `
     });
+
+    console.log(`[ONBOARDING] ✅ Access granted successfully for ${email}`);
+}
+
+// ══════════════════════════════════════════
+// HELPER: Expire an unverified user (48h timeout)
+// ══════════════════════════════════════════
+async function handleExpiration(email, supabase, resend) {
+    // Remove from Supabase unverified table
+    await supabase.from('unverified_users').delete().eq('email', email);
+
+    // Remove from Resend Unverified audience
+    try {
+        await removeContactByEmail(resend, email, UNVERIFIED_AUDIENCE_ID);
+    } catch (err) {
+        console.warn(`[ONBOARDING] Resend cleanup warning for ${email}:`, err.message);
+    }
+
+    console.log(`[ONBOARDING] ✅ Expired user removed: ${email}`);
+}
+
+// ══════════════════════════════════════════
+// HELPER: Remove a Resend contact by email (lookup ID first)
+// The Resend SDK requires a contact UUID to remove, not an email address.
+// ══════════════════════════════════════════
+async function removeContactByEmail(resend, email, audienceId) {
+    // 1. List all contacts in the audience
+    const { data: contactList, error: listErr } = await resend.contacts.list({ audienceId });
+    
+    if (listErr) {
+        throw new Error(`Failed to list contacts: ${JSON.stringify(listErr)}`);
+    }
+
+    if (!contactList?.data || contactList.data.length === 0) {
+        console.log(`[ONBOARDING] No contacts found in audience ${audienceId}`);
+        return;
+    }
+
+    // 2. Find the contact by email
+    const contact = contactList.data.find(
+        c => c.email.toLowerCase().trim() === email.toLowerCase().trim()
+    );
+
+    if (!contact) {
+        console.log(`[ONBOARDING] Contact ${email} not found in audience ${audienceId}, skipping removal.`);
+        return;
+    }
+
+    // 3. Remove by contact ID
+    const { error: removeErr } = await resend.contacts.remove({
+        id: contact.id,
+        audienceId: audienceId,
+    });
+
+    if (removeErr) {
+        throw new Error(`Failed to remove contact ${email} (id: ${contact.id}): ${JSON.stringify(removeErr)}`);
+    }
+
+    console.log(`[ONBOARDING] Removed ${email} (id: ${contact.id}) from audience ${audienceId}`);
 }
