@@ -14,6 +14,16 @@
     {
       "src": "/api/clone-voice", 
       "dest": "/api/clone-voice.js"
+    },
+    {
+      "src": "/api/onboarding-automation",
+      "dest": "/api/onboarding-automation.js"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/onboarding-automation",
+      "schedule": "0 * * * *"
     }
   ]
 }
