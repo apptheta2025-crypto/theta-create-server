@@ -18,13 +18,22 @@ const resend = new Resend(RESEND_API_KEY);
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 export default async function handler(req, res) {
-    // Handle Instant Webhook from Google Sheets
+    // 1. Handle Instant Webhook from Google Sheets
     if (req.method === 'POST' && req.body.webhookSecret === 'theta_instant_grant') {
         const { email } = req.body;
-        if (email) {
-            console.log(`Instant grant request for ${email}...`);
-            await grantAccess(email.toLowerCase().trim());
-            return res.status(200).json({ success: true, message: `Access granted instantly to ${email}` });
+        if (email && email.includes('@')) {
+            console.log(`[Webhook] Instant grant request for: ${email}`);
+            try {
+                const result = await grantAccess(email.toLowerCase().trim());
+                console.log(`[Webhook] Success for ${email}`);
+                return res.status(200).json({ success: true, message: `Access granted instantly to ${email}` });
+            } catch (err) {
+                console.error(`[Webhook] Error granting for ${email}:`, err.message);
+                return res.status(500).json({ error: err.message });
+            }
+        } else {
+            console.warn(`[Webhook] Invalid email received: ${email}`);
+            return res.status(400).json({ error: 'Invalid email' });
         }
     }
 
