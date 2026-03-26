@@ -106,8 +106,22 @@ async function grantAccess(email) {
     await supabase.from('unverified_users').update({ verified: true }).eq('email', email);
 
     // B. Move in Resend (Remove from Unverified, Add to General)
-    // Actually, Resend contacts are single entities; we use Audience IDs.
-    // We update the contact and potentially tags.
+    try {
+        // Add to General Audience
+        await resend.contacts.create({
+            email: email,
+            unsubscribed: false,
+            audienceId: GENERAL_AUDIENCE_ID,
+        });
+        
+        // Remove from Unverified Audience
+        await resend.contacts.remove({
+            email: email,
+            audienceId: UNVERIFIED_USERS_ID,
+        });
+    } catch (err) {
+        console.warn(`[Resend] Failed to move segments for ${email}:`, err.message);
+    }
     
     // C. Send Access Granted Email
     await resend.emails.send({
