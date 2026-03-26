@@ -21,10 +21,27 @@ export default async function handler(req, res) {
     const resend = new Resend(RESEND_API_KEY);
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // AUTO-WHITELIST ADMIN (Recovery for the lock-out you are seeing)
+    // AUTO-WHITELIST ADMIN (Recovery)
     try {
         await supabase.from('allowed_users').upsert({ email: 'lubhitmamodia23@gmail.com' });
     } catch (e) { console.error("Admin auto-whitelist failed:", e.message); }
+
+    // [MIGRATION MODE] - Sync existing General list to Supabase
+    if (req.query?.migrate === 'true') {
+        console.log("[DEBUG] Legacy Migration Triggered...");
+        try {
+            const { data: contacts } = await resend.contacts.list({ audienceId: GENERAL_AUDIENCE_ID });
+            if (contacts && contacts.data) {
+                console.log(`[DEBUG] Migrating ${contacts.data.length} users...`);
+                for (const c of contacts.data) {
+                    await supabase.from('allowed_users').upsert({ email: c.email.toLowerCase().trim() });
+                }
+                return res.status(200).json({ message: `Successfully migrated ${contacts.data.length} users to Supabase.` });
+            }
+        } catch (err) {
+            return res.status(500).json({ error: `Migration Failed: ${err.message}` });
+        }
+    }
 
     // 1. Handle Instant Webhook from Google Sheets
     if (req.method === 'POST' && req.body?.webhookSecret === 'theta_instant_grant') {
