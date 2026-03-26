@@ -21,6 +21,11 @@ export default async function handler(req, res) {
     const resend = new Resend(RESEND_API_KEY);
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+    // AUTO-WHITELIST ADMIN (Recovery for the lock-out you are seeing)
+    try {
+        await supabase.from('allowed_users').upsert({ email: 'lubhitmamodia23@gmail.com' });
+    } catch (e) { console.error("Admin auto-whitelist failed:", e.message); }
+
     // 1. Handle Instant Webhook from Google Sheets
     if (req.method === 'POST' && req.body?.webhookSecret === 'theta_instant_grant') {
         const { email } = req.body;
