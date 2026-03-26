@@ -93,11 +93,44 @@ async function grantAccess(email, supabase, resend) {
         console.warn(`[DEBUG] Resend Sync Warning:`, err.message);
     }
 
-    // Final Email
+     // Final Email
     await resend.emails.send({
         from: 'Theta <no-reply@theta.co.in>',
         to: email,
         subject: 'Your spot is ready. Step in.',
-        html: `<h1>Welcome to Theta Create</h1><p>Your access is granted.</p>`
+        html: `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <style>
+              @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;700&display=swap');
+              body { background-color: #000000; color: #ffffff; font-family: 'DM Sans', sans-serif; padding: 48px 20px; -webkit-font-smoothing: antialiased; }
+              .container { max-width: 600px; margin: 0 auto; background-color: #09090b; border: 1px solid #27272a; border-radius: 24px; padding: 48px; }
+              .accent { color: #BC46EA; }
+              .btn { display: inline-block; background-color: #ffffff; color: #000000; padding: 16px 36px; border-radius: 100px; text-decoration: none; font-weight: bold; margin: 32px 0; }
+              p { color: #a1a1aa; line-height: 1.6; font-size: 16px; }
+              .footer { border-top: 1px solid #27272a; margin-top: 48px; padding-top: 24px; color: #52525b; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1 style="color: #ffffff; font-size: 32px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 24px;">Your spot is ready. <span class="accent">Step in.</span></h1>
+                <p>Welcome to the future of storytelling. Your account has been verified, and the Theta Create Alpha is now open for you.</p>
+                <p>We've prepared your creative workspace. You can now draft manuscripts, clone your voice, and publish professional audiobooks in one unified flow.</p>
+                
+                <a href="https://create.theta.co.in" class="btn">Enter the Studio</a>
+                
+                <p style="color: #ffffff; font-weight: 500;">Write the story. Voice the world.</p>
+                
+                <div class="footer">
+                    © 2026 Theta. All rights reserved. <br/>
+                    You received this because your alpha access was approved.
+                </div>
+            </div>
+        </body>
+        </html>
+        `
     });
 }
