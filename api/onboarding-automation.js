@@ -18,12 +18,22 @@ const resend = new Resend(RESEND_API_KEY);
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 export default async function handler(req, res) {
-    // Vercel Cron Secret Check
+    // Handle Instant Webhook from Google Sheets
+    if (req.method === 'POST' && req.body.webhookSecret === 'theta_instant_grant') {
+        const { email } = req.body;
+        if (email) {
+            console.log(`Instant grant request for ${email}...`);
+            await grantAccess(email.toLowerCase().trim());
+            return res.status(200).json({ success: true, message: `Access granted instantly to ${email}` });
+        }
+    }
+
+    // Cron Secret Check (for scheduled maintenance)
     if (process.env.CRON_SECRET && req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    console.log("Starting onboarding automation cycle...");
+    console.log("Starting maintenance cycle (scanning sheet/expiring spots)...");
 
     try {
         // 1. Fetch unverified users who haven't verified yet
