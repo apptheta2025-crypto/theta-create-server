@@ -6,9 +6,9 @@ const { createClient } = require('@supabase/supabase-js');
 // CONFIGURATION
 // ==========================================
 const GOOGLE_SHEET_ID = '1Ufb9zBRhjGjRU5xKdvWkMI_fono1sxHj5cTbEWlQubQ'; 
-const SUPABASE_URL = 'https://fwzvypztpxcfmukvkdfq.supabase.co';
-const SUPABASE_SERVICE_ROLE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ3enZ5cHp0cHhjZm11a3ZrZGZxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NDE3MDYwNiwiZXhwIjoyMDg5NzQ2NjA2fQ.6jYspE_CvZqrF2MRXpz8AQDRDDDxogxvQrqiqtv-wpY';
-const RESEND_API_KEY = 're_XEdtRhnR_PMP4CtXZwJptgZ2qMb2QxHCR';
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://fwzvypztpxcfmukvkdfq.supabase.co';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const RESEND_API_KEY = process.env.RESEND_API_KEY || 're_XEdtRhnR_PMP4CtXZwJptgZ2qMb2QxHCR';
 
 // Resend Audience Segments
 const GENERAL_AUDIENCE_ID = '76bd49ad-9462-4971-9ffa-6eefb60e90b0';
