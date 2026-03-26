@@ -22,17 +22,18 @@ export default async function handler(req, res) {
     if (req.method === 'POST' && req.body.webhookSecret === 'theta_instant_grant') {
         const { email } = req.body;
         if (email && email.includes('@')) {
-            console.log(`[Webhook] Instant grant request for: ${email}`);
+            console.log(`[DEBUG] Step 1: Webhook received for: ${email}`);
             try {
-                const result = await grantAccess(email.toLowerCase().trim());
-                console.log(`[Webhook] Success for ${email}`);
+                console.log(`[DEBUG] Step 2: Starting grantProcess for ${email}...`);
+                await grantAccess(email.toLowerCase().trim());
+                console.log(`[DEBUG] Step 5: Webhook complete for ${email}`);
                 return res.status(200).json({ success: true, message: `Access granted instantly to ${email}` });
             } catch (err) {
-                console.error(`[Webhook] Error granting for ${email}:`, err.message);
+                console.error(`[DEBUG] CRITICAL ERROR for ${email}:`, err.message);
                 return res.status(500).json({ error: err.message });
             }
         } else {
-            console.warn(`[Webhook] Invalid email received: ${email}`);
+            console.warn(`[DEBUG] Step 1 ERROR: Invalid email received: ${email}`);
             return res.status(400).json({ error: 'Invalid email' });
         }
     }
@@ -102,11 +103,13 @@ export default async function handler(req, res) {
 
 async function grantAccess(email) {
     // A. Whitelist in Supabase
+    console.log(`[DEBUG] Step 3a: Whitelisting ${email} in Supabase...`);
     await supabase.from('allowed_users').upsert({ email });
     await supabase.from('unverified_users').update({ verified: true }).eq('email', email);
 
     // B. Move in Resend (Remove from Unverified, Add to General)
     try {
+        console.log(`[DEBUG] Step 3b: Moving ${email} across Resend segments...`);
         // Add to General Audience
         await resend.contacts.create({
             email: email,
@@ -120,11 +123,13 @@ async function grantAccess(email) {
             audienceId: UNVERIFIED_USERS_ID,
         });
     } catch (err) {
-        console.warn(`[Resend] Failed to move segments for ${email}:`, err.message);
+        console.warn(`[DEBUG] Warning: Resend segment move failed for ${email} (Non-critical):`, err.message);
     }
     
     // C. Send Access Granted Email
-    await resend.emails.send({
+    try {
+        console.log(`[DEBUG] Step 4: Sending final Access Granted email to ${email}...`);
+        const { data, error } = await resend.emails.send({
         from: 'Theta <no-reply@theta.co.in>',
         to: email,
         subject: 'Your spot is ready. Step in.',
@@ -163,6 +168,11 @@ async function grantAccess(email) {
         </html>
         `
     });
+        if (error) throw new Error(error.message);
+        console.log(`[DEBUG] Step 4 SUCCESS: Email sent to ${email}`);
+    } catch (emailErr) {
+        console.error(`[DEBUG] Step 4 ERROR: Failed to send email to ${email}:`, emailErr.message);
+    }
 }
 
 async function handleExpiration(email) {
