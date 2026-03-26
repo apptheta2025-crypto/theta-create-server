@@ -1,6 +1,7 @@
-const { google } = require('googleapis');
-const { Resend } = require('resend');
-const { createClient } = require('@supabase/supabase-js');
+import { google } from 'googleapis';
+import { Resend } from 'resend';
+import { createClient } from '@supabase/supabase-js';
+import 'dotenv/config'; // Ensure env vars are loaded if running manually
 
 // ==========================================
 // CONFIGURATION
