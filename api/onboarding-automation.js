@@ -233,7 +233,7 @@ async function grantAccess(email, supabase, resend) {
 
     // 4. Send "Access Granted" email
     await resend.emails.send({
-        from: 'Theta <no-reply@theta.co.in>',
+        from: 'Theta <team@theta.co.in>',
         to: email,
         subject: 'Your spot is ready. Step in.',
         html: `
@@ -243,8 +243,8 @@ async function grantAccess(email, supabase, resend) {
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <style>
-              @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;700&display=swap');
-              body { background-color: #000000; color: #ffffff; font-family: 'DM Sans', sans-serif; padding: 48px 20px; -webkit-font-smoothing: antialiased; }
+              /* System fonts for email deliverability */
+              body { background-color: #000000; color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 48px 20px; -webkit-font-smoothing: antialiased; }
               .container { max-width: 600px; margin: 0 auto; background-color: #09090b; border: 1px solid #27272a; border-radius: 24px; padding: 48px; }
               .accent { color: #BC46EA; }
               .btn { display: inline-block; background-color: #ffffff; color: #000000; padding: 16px 36px; border-radius: 100px; text-decoration: none; font-weight: bold; margin: 32px 0; }
